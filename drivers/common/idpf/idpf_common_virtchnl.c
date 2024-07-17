@@ -366,7 +366,7 @@ idpf_vc_queue_grps_add(struct idpf_vport *vport,
 	int err = -1;
 
 	size = sizeof(*p2p_queue_grps_info) +
-	       (p2p_queue_grps_info->qg_info.num_queue_groups - 1) *
+	       (p2p_queue_grps_info->num_queue_groups - 1) *
 		   sizeof(struct virtchnl2_queue_group_info);
 
 	memset(&args, 0, sizeof(args));
@@ -769,15 +769,11 @@ idpf_vc_ena_dis_one_queue(struct idpf_vport *vport, uint16_t qid,
 
 int
 idpf_vc_queue_switch(struct idpf_vport *vport, uint16_t qid,
-		     bool rx, bool on)
+		     bool rx, bool on, uint32_t type)
 {
-	uint32_t type;
 	int err, queue_id;
 
-	/* switch txq/rxq */
-	type = rx ? VIRTCHNL2_QUEUE_TYPE_RX : VIRTCHNL2_QUEUE_TYPE_TX;
-
-	if (type == VIRTCHNL2_QUEUE_TYPE_RX)
+	if (rx)
 		queue_id = vport->chunks_info.rx_start_qid + qid;
 	else
 		queue_id = vport->chunks_info.tx_start_qid + qid;

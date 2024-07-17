@@ -1443,6 +1443,10 @@ struct mlx5_action_construct_data {
 	indirect_list_callback_t indirect_list_cb;
 	union {
 		struct {
+			/* Expected type of indirection action. */
+			enum rte_flow_action_type expected_type;
+		} indirect;
+		struct {
 			/* encap data len. */
 			uint16_t len;
 		} encap;
@@ -1468,6 +1472,8 @@ struct mlx5_action_construct_data {
 			 * PRM actions.
 			 */
 			uint32_t mask[MLX5_ACT_MAX_MOD_FIELDS];
+			/* Copy of action passed to the action template. */
+			struct rte_flow_action_modify_field action;
 		} modify_header;
 		struct {
 			bool symmetric_hash_function; /* Symmetric RSS hash */
@@ -1522,6 +1528,8 @@ struct rte_flow_pattern_template {
 	/* Manages all GENEVE TLV options used by this pattern template. */
 	struct mlx5_geneve_tlv_options_mng geneve_opt_mng;
 	uint8_t flex_item; /* flex item index. */
+	/* Items on which this pattern template is based on. */
+	struct rte_flow_item *items;
 };
 
 /* Flow action template struct. */
@@ -1530,6 +1538,7 @@ struct rte_flow_actions_template {
 	/* Template attributes. */
 	struct rte_flow_actions_template_attr attr;
 	struct rte_flow_action *actions; /* Cached flow actions. */
+	struct rte_flow_action *orig_actions; /* Original flow actions. */
 	struct rte_flow_action *masks; /* Cached action masks.*/
 	struct mlx5dr_action_template *tmpl; /* mlx5dr action template. */
 	uint64_t action_flags; /* Bit-map of all valid action in template. */
@@ -1634,7 +1643,7 @@ struct mlx5_flow_group {
 };
 
 
-#define MLX5_HW_TBL_MAX_ITEM_TEMPLATE 2
+#define MLX5_HW_TBL_MAX_ITEM_TEMPLATE 32
 #define MLX5_HW_TBL_MAX_ACTION_TEMPLATE 32
 
 #define MLX5_MULTIPATTERN_ENCAP_NUM 5
@@ -3018,6 +3027,9 @@ int mlx5_flow_validate_action_mark(struct rte_eth_dev *dev,
 				   uint64_t action_flags,
 				   const struct rte_flow_attr *attr,
 				   struct rte_flow_error *error);
+int mlx5_flow_validate_target_queue(struct rte_eth_dev *dev,
+				    const struct rte_flow_action *action,
+				    struct rte_flow_error *error);
 int mlx5_flow_validate_action_queue(const struct rte_flow_action *action,
 				    uint64_t action_flags,
 				    struct rte_eth_dev *dev,

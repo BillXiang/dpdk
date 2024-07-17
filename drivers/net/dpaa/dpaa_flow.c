@@ -68,7 +68,7 @@ static void fm_prev_cleanup(void)
 
 	fm_info.fman_handle = fm_open(fman_id);
 	if (!fm_info.fman_handle) {
-		printf("\n%s- unable to open FMAN", __func__);
+		DPAA_PMD_ERR("unable to open FMAN");
 		return;
 	}
 
@@ -78,7 +78,7 @@ static void fm_prev_cleanup(void)
 	/* FM PCD Open */
 	fm_info.pcd_handle = fm_pcd_open(&fm_pcd_params);
 	if (!fm_info.pcd_handle) {
-		printf("\n%s- unable to open PCD", __func__);
+		DPAA_PMD_ERR("unable to open PCD");
 		return;
 	}
 
@@ -108,11 +108,11 @@ static void fm_prev_cleanup(void)
 			continue;
 
 		if (dpaa_fm_deconfig(&dpaa_intf, NULL))
-			printf("\nDPAA FM deconfig failed\n");
+			DPAA_PMD_ERR("DPAA FM deconfig failed");
 	}
 
 	if (dpaa_fm_term())
-		printf("\nDPAA FM term failed\n");
+		DPAA_PMD_ERR("DPAA FM term failed");
 
 	memset(&fm_model, 0, sizeof(struct dpaa_fm_model));
 }
@@ -531,7 +531,7 @@ fm_port_delete_pcd:
 	/* FM PORT DeletePCD */
 	ret = fm_port_delete_pcd(dpaa_intf->port_handle);
 	if (ret != E_OK) {
-		DPAA_PMD_ERR("fm_port_delete_pcd: Failed\n");
+		DPAA_PMD_ERR("fm_port_delete_pcd: Failed");
 		return ret;
 	}
 	return -1;
@@ -686,7 +686,7 @@ static inline int set_fm_port_handle(struct dpaa_if *dpaa_intf,
 	/* FM PORT Open */
 	dpaa_intf->port_handle = fm_port_open(&fm_port_params);
 	if (!dpaa_intf->port_handle) {
-		DPAA_PMD_ERR("fm_port_open: Failed\n");
+		DPAA_PMD_ERR("fm_port_open: Failed");
 		return -1;
 	}
 

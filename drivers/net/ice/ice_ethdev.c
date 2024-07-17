@@ -181,6 +181,10 @@ static int ice_timesync_read_time(struct rte_eth_dev *dev,
 static int ice_timesync_write_time(struct rte_eth_dev *dev,
 				   const struct timespec *timestamp);
 static int ice_timesync_disable(struct rte_eth_dev *dev);
+static int ice_fec_get_capability(struct rte_eth_dev *dev, struct rte_eth_fec_capa *speed_fec_capa,
+			   unsigned int num);
+static int ice_fec_get(struct rte_eth_dev *dev, uint32_t *fec_capa);
+static int ice_fec_set(struct rte_eth_dev *dev, uint32_t fec_capa);
 static const uint32_t *ice_buffer_split_supported_hdr_ptypes_get(struct rte_eth_dev *dev,
 						size_t *no_of_elements);
 
@@ -217,6 +221,15 @@ static const struct rte_pci_id pci_id_ice_map[] = {
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E825C_SFP) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_C825X) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E825C_SGMII) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_BACKPLANE) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_QSFP56) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_SFP) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830C_BACKPLANE) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_XXV_BACKPLANE) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830C_QSFP) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_XXV_QSFP) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830C_SFP) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_XXV_SFP) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
@@ -298,6 +311,9 @@ static const struct eth_dev_ops ice_eth_dev_ops = {
 	.timesync_write_time          = ice_timesync_write_time,
 	.timesync_disable             = ice_timesync_disable,
 	.tm_ops_get                   = ice_tm_ops_get,
+	.fec_get_capability           = ice_fec_get_capability,
+	.fec_get                      = ice_fec_get,
+	.fec_set                      = ice_fec_set,
 	.buffer_split_supported_hdr_ptypes_get = ice_buffer_split_supported_hdr_ptypes_get,
 };
 
@@ -880,7 +896,7 @@ ice_vsi_config_default_rss(struct ice_aqc_vsi_props *info)
 	info->q_opt_tc = ICE_AQ_VSI_Q_OPT_TC_OVR_M;
 }
 
-static enum ice_status
+static int
 ice_vsi_config_tc_queue_mapping(struct ice_vsi *vsi,
 				struct ice_aqc_vsi_props *info,
 				uint8_t enabled_tcmap)
@@ -2206,39 +2222,7 @@ bail:
 	return ret;
 }
 
-/* Forward LLDP packets to default VSI by set switch rules */
 static int
-ice_vsi_config_sw_lldp(struct ice_vsi *vsi,  bool on)
-{
-	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
-	struct ice_fltr_list_entry *s_list_itr = NULL;
-	struct LIST_HEAD_TYPE list_head;
-	int ret = 0;
-
-	INIT_LIST_HEAD(&list_head);
-
-	s_list_itr = (struct ice_fltr_list_entry *)
-			ice_malloc(hw, sizeof(*s_list_itr));
-	if (!s_list_itr)
-		return -ENOMEM;
-	s_list_itr->fltr_info.lkup_type = ICE_SW_LKUP_ETHERTYPE;
-	s_list_itr->fltr_info.vsi_handle = vsi->idx;
-	s_list_itr->fltr_info.l_data.ethertype_mac.ethertype =
-			RTE_ETHER_TYPE_LLDP;
-	s_list_itr->fltr_info.fltr_act = ICE_FWD_TO_VSI;
-	s_list_itr->fltr_info.flag = ICE_FLTR_RX;
-	s_list_itr->fltr_info.src_id = ICE_SRC_ID_LPORT;
-	LIST_ADD(&s_list_itr->list_entry, &list_head);
-	if (on)
-		ret = ice_add_eth_mac(hw, &list_head);
-	else
-		ret = ice_remove_eth_mac(hw, &list_head);
-
-	rte_free(s_list_itr);
-	return ret;
-}
-
-static enum ice_status
 ice_get_hw_res(struct ice_hw *hw, uint16_t res_type,
 		uint16_t num, uint16_t desc_id,
 		uint16_t *prof_buf, uint16_t *num_prof)
@@ -2491,7 +2475,7 @@ ice_dev_init(struct rte_eth_dev *dev)
 	if (ret != ICE_SUCCESS)
 		PMD_INIT_LOG(DEBUG, "Failed to init DCB\n");
 	/* Forward LLDP packets to default VSI */
-	ret = ice_vsi_config_sw_lldp(vsi, true);
+	ret = ice_lldp_fltr_add_remove(hw, vsi->vsi_id, true);
 	if (ret != ICE_SUCCESS)
 		PMD_INIT_LOG(DEBUG, "Failed to cfg lldp\n");
 	/* register callback func to eal lib */
@@ -2513,12 +2497,12 @@ ice_dev_init(struct rte_eth_dev *dev)
 	ice_tm_conf_init(dev);
 
 	if (ice_is_e810(hw))
-		hw->phy_cfg = ICE_PHY_E810;
+		hw->phy_model = ICE_PHY_E810;
 	else
-		hw->phy_cfg = ICE_PHY_E822;
+		hw->phy_model = ICE_PHY_E822;
 
-	if (hw->phy_cfg == ICE_PHY_E822) {
-		ret = ice_start_phy_timer_e822(hw, hw->pf_id, true);
+	if (hw->phy_model == ICE_PHY_E822) {
+		ret = ice_start_phy_timer_e822(hw, hw->pf_id);
 		if (ret)
 			PMD_INIT_LOG(ERR, "Failed to start phy timer\n");
 	}
@@ -2571,8 +2555,7 @@ ice_release_vsi(struct ice_vsi *vsi)
 {
 	struct ice_hw *hw;
 	struct ice_vsi_ctx vsi_ctx;
-	enum ice_status ret;
-	int error = 0;
+	int ret, error = 0;
 
 	if (!vsi)
 		return error;
@@ -2757,7 +2740,7 @@ hash_cfg_reset(struct ice_rss_hash_cfg *cfg)
 static int
 ice_hash_moveout(struct ice_pf *pf, struct ice_rss_hash_cfg *cfg)
 {
-	enum ice_status status = ICE_SUCCESS;
+	int status;
 	struct ice_hw *hw = ICE_PF_TO_HW(pf);
 	struct ice_vsi *vsi = pf->main_vsi;
 
@@ -2778,7 +2761,7 @@ ice_hash_moveout(struct ice_pf *pf, struct ice_rss_hash_cfg *cfg)
 static int
 ice_hash_moveback(struct ice_pf *pf, struct ice_rss_hash_cfg *cfg)
 {
-	enum ice_status status = ICE_SUCCESS;
+	int status;
 	struct ice_hw *hw = ICE_PF_TO_HW(pf);
 	struct ice_vsi *vsi = pf->main_vsi;
 
@@ -3703,7 +3686,7 @@ ice_rxq_intr_setup(struct rte_eth_dev *dev)
 	return 0;
 }
 
-static enum ice_status
+static int
 ice_get_link_info_safe(struct ice_pf *pf, bool ena_lse,
 		       struct ice_link_status *link)
 {
@@ -3799,6 +3782,8 @@ ice_dev_start(struct rte_eth_dev *dev)
 	uint8_t timer = hw->func_caps.ts_func_info.tmr_index_owned;
 	uint32_t pin_idx = ad->devargs.pin_idx;
 	struct rte_tm_error tm_err;
+	ice_declare_bitmap(pmask, ICE_PROMISC_MAX);
+	ice_zero_bitmap(pmask, ICE_PROMISC_MAX);
 
 	/* program Tx queues' context in hardware */
 	for (nb_txq = 0; nb_txq < data->nb_tx_queues; nb_txq++) {
@@ -3855,10 +3840,12 @@ ice_dev_start(struct rte_eth_dev *dev)
 		return -EIO;
 
 	/* Enable receiving broadcast packets and transmitting packets */
-	ret = ice_set_vsi_promisc(hw, vsi->idx,
-				  ICE_PROMISC_BCAST_RX | ICE_PROMISC_BCAST_TX |
-				  ICE_PROMISC_UCAST_TX | ICE_PROMISC_MCAST_TX,
-				  0);
+	ice_set_bit(ICE_PROMISC_BCAST_RX, pmask);
+	ice_set_bit(ICE_PROMISC_BCAST_TX, pmask);
+	ice_set_bit(ICE_PROMISC_UCAST_TX, pmask);
+	ice_set_bit(ICE_PROMISC_MCAST_TX, pmask);
+
+	ret = ice_set_vsi_promisc(hw, vsi->idx, pmask, 0);
 	if (ret != ICE_SUCCESS)
 		PMD_DRV_LOG(INFO, "fail to set vsi broadcast");
 
@@ -4598,8 +4585,7 @@ ice_vsi_manage_vlan_stripping(struct ice_vsi *vsi, bool ena)
 {
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	struct ice_vsi_ctx ctxt;
-	enum ice_status status;
-	int err = 0;
+	int status, err = 0;
 
 	/* do not allow modifying VLAN stripping when a port VLAN is configured
 	 * on this VSI
@@ -4725,9 +4711,8 @@ static int ice_vsi_ena_outer_stripping(struct ice_vsi *vsi, u16 tpid)
 {
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	struct ice_vsi_ctx ctxt;
-	enum ice_status status;
+	int status, err = 0;
 	u8 tag_type;
-	int err = 0;
 
 	/* do not allow modifying VLAN stripping when a port VLAN is configured
 	 * on this VSI
@@ -4767,8 +4752,7 @@ ice_vsi_dis_outer_stripping(struct ice_vsi *vsi)
 {
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	struct ice_vsi_ctx ctxt;
-	enum ice_status status;
-	int err = 0;
+	int status, err = 0;
 
 	if (vsi->info.port_based_outer_vlan)
 		return 0;
@@ -5167,9 +5151,9 @@ static int
 ice_rss_hash_update(struct rte_eth_dev *dev,
 		    struct rte_eth_rss_conf *rss_conf)
 {
-	enum ice_status status = ICE_SUCCESS;
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct ice_vsi *vsi = pf->main_vsi;
+	int status;
 
 	/* set hash key */
 	status = ice_set_rss_key(vsi, rss_conf->rss_key, rss_conf->rss_key_len);
@@ -5205,12 +5189,14 @@ ice_promisc_enable(struct rte_eth_dev *dev)
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_vsi *vsi = pf->main_vsi;
-	enum ice_status status;
-	uint8_t pmask;
-	int ret = 0;
+	int status, ret = 0;
+	ice_declare_bitmap(pmask, ICE_PROMISC_MAX);
+	ice_zero_bitmap(pmask, ICE_PROMISC_MAX);
 
-	pmask = ICE_PROMISC_UCAST_RX | ICE_PROMISC_UCAST_TX |
-		ICE_PROMISC_MCAST_RX | ICE_PROMISC_MCAST_TX;
+	ice_set_bit(ICE_PROMISC_UCAST_RX, pmask);
+	ice_set_bit(ICE_PROMISC_UCAST_TX, pmask);
+	ice_set_bit(ICE_PROMISC_MCAST_RX, pmask);
+	ice_set_bit(ICE_PROMISC_MCAST_TX, pmask);
 
 	status = ice_set_vsi_promisc(hw, vsi->idx, pmask, 0);
 	switch (status) {
@@ -5232,15 +5218,19 @@ ice_promisc_disable(struct rte_eth_dev *dev)
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_vsi *vsi = pf->main_vsi;
-	enum ice_status status;
-	uint8_t pmask;
-	int ret = 0;
+	int status, ret = 0;
+	ice_declare_bitmap(pmask, ICE_PROMISC_MAX);
+	ice_zero_bitmap(pmask, ICE_PROMISC_MAX);
 
-	if (dev->data->all_multicast == 1)
-		pmask = ICE_PROMISC_UCAST_RX | ICE_PROMISC_UCAST_TX;
-	else
-		pmask = ICE_PROMISC_UCAST_RX | ICE_PROMISC_UCAST_TX |
-			ICE_PROMISC_MCAST_RX | ICE_PROMISC_MCAST_TX;
+	if (dev->data->all_multicast == 1) {
+		ice_set_bit(ICE_PROMISC_UCAST_RX, pmask);
+		ice_set_bit(ICE_PROMISC_UCAST_TX, pmask);
+	} else {
+		ice_set_bit(ICE_PROMISC_UCAST_RX, pmask);
+		ice_set_bit(ICE_PROMISC_UCAST_TX, pmask);
+		ice_set_bit(ICE_PROMISC_MCAST_RX, pmask);
+		ice_set_bit(ICE_PROMISC_MCAST_TX, pmask);
+	}
 
 	status = ice_clear_vsi_promisc(hw, vsi->idx, pmask, 0);
 	if (status != ICE_SUCCESS) {
@@ -5257,11 +5247,12 @@ ice_allmulti_enable(struct rte_eth_dev *dev)
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_vsi *vsi = pf->main_vsi;
-	enum ice_status status;
-	uint8_t pmask;
-	int ret = 0;
+	int status, ret = 0;
+	ice_declare_bitmap(pmask, ICE_PROMISC_MAX);
+	ice_zero_bitmap(pmask, ICE_PROMISC_MAX);
 
-	pmask = ICE_PROMISC_MCAST_RX | ICE_PROMISC_MCAST_TX;
+	ice_set_bit(ICE_PROMISC_MCAST_RX, pmask);
+	ice_set_bit(ICE_PROMISC_MCAST_TX, pmask);
 
 	status = ice_set_vsi_promisc(hw, vsi->idx, pmask, 0);
 
@@ -5284,14 +5275,15 @@ ice_allmulti_disable(struct rte_eth_dev *dev)
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_vsi *vsi = pf->main_vsi;
-	enum ice_status status;
-	uint8_t pmask;
-	int ret = 0;
+	int status, ret = 0;
+	ice_declare_bitmap(pmask, ICE_PROMISC_MAX);
+	ice_zero_bitmap(pmask, ICE_PROMISC_MAX);
 
 	if (dev->data->promiscuous == 1)
 		return 0; /* must remain in all_multicast mode */
 
-	pmask = ICE_PROMISC_MCAST_RX | ICE_PROMISC_MCAST_TX;
+	ice_set_bit(ICE_PROMISC_MCAST_RX, pmask);
+	ice_set_bit(ICE_PROMISC_MCAST_TX, pmask);
 
 	status = ice_clear_vsi_promisc(hw, vsi->idx, pmask, 0);
 	if (status != ICE_SUCCESS) {
@@ -5446,9 +5438,8 @@ ice_vsi_set_outer_port_vlan(struct ice_vsi *vsi, u16 vlan_info, u16 tpid)
 {
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	struct ice_vsi_ctx ctxt;
-	enum ice_status status;
+	int status, err = 0;
 	u8 tag_type;
-	int err = 0;
 
 	if (tpid_to_vsi_outer_vlan_type(tpid, &tag_type))
 		return -EINVAL;
@@ -5507,9 +5498,8 @@ static int ice_vsi_dis_outer_insertion(struct ice_vsi *vsi, struct ice_vsi_vlan_
 {
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	struct ice_vsi_ctx ctxt;
-	enum ice_status status;
 	uint8_t vlan_flags = 0;
-	int err = 0;
+	int status, err = 0;
 
 	memset(&ctxt, 0, sizeof(ctxt));
 
@@ -5584,8 +5574,7 @@ static int ice_vsi_ena_outer_insertion(struct ice_vsi *vsi, uint16_t tpid)
 {
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	struct ice_vsi_ctx ctxt;
-	enum ice_status status;
-	int err = 0;
+	int status, err = 0;
 	u8 tag_type;
 	/* do not allow modifying VLAN stripping when a port VLAN is configured
 	 * on this VSI
@@ -5664,8 +5653,8 @@ ice_get_eeprom(struct rte_eth_dev *dev,
 	       struct rte_dev_eeprom_info *eeprom)
 {
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	enum ice_status status = ICE_SUCCESS;
 	uint8_t *data = eeprom->data;
+	int status;
 
 	eeprom->magic = hw->vendor_id | (hw->device_id << 16);
 
@@ -5693,11 +5682,11 @@ ice_get_module_info(struct rte_eth_dev *dev,
 		    struct rte_eth_dev_module_info *modinfo)
 {
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	enum ice_status status;
 	u8 sff8472_comp = 0;
 	u8 sff8472_swap = 0;
 	u8 sff8636_rev = 0;
 	u8 value = 0;
+	int status;
 
 	status = ice_aq_sff_eeprom(hw, 0, ICE_I2C_EEPROM_DEV_ADDR, 0x00, 0x00,
 				   0, &value, 1, 0, NULL);
@@ -5765,11 +5754,11 @@ ice_get_module_eeprom(struct rte_eth_dev *dev,
 	uint8_t value[SFF_READ_BLOCK_SIZE] = {0};
 	uint8_t addr = ICE_I2C_EEPROM_DEV_ADDR;
 	uint8_t *data = NULL;
-	enum ice_status status;
 	bool is_sfp = false;
 	uint32_t i, j;
 	uint32_t offset = 0;
 	uint8_t page = 0;
+	int status;
 
 	if (!info || !info->length || !info->data)
 		return -EINVAL;
@@ -6471,7 +6460,7 @@ ice_timesync_enable(struct rte_eth_dev *dev)
 			return -1;
 		}
 
-		ret = ice_ptp_write_incval(hw, ICE_PTP_NOMINAL_INCVAL_E810);
+		ret = ice_ptp_write_incval(hw, ICE_PTP_NOMINAL_INCVAL_E810, true);
 		if (ret) {
 			PMD_DRV_LOG(ERR,
 				"Failed to write PHC increment time value");
@@ -6675,6 +6664,288 @@ ice_buffer_split_supported_hdr_ptypes_get(struct rte_eth_dev *dev __rte_unused,
 
 	*no_of_elements = RTE_DIM(ptypes);
 	return ptypes;
+}
+
+static unsigned int
+ice_fec_get_capa_num(struct ice_aqc_get_phy_caps_data *pcaps,
+			   struct rte_eth_fec_capa *speed_fec_capa)
+{
+	unsigned int num = 0;
+	int auto_fec = (pcaps->caps & ICE_AQC_PHY_EN_AUTO_FEC) ?
+		RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) : 0;
+	int link_nofec = (pcaps->link_fec_options & ICE_AQC_PHY_FEC_DIS) ?
+		RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC) : 0;
+
+	if (pcaps->eee_cap & ICE_AQC_PHY_EEE_EN_100BASE_TX) {
+		if (speed_fec_capa) {
+			speed_fec_capa[num].speed = RTE_ETH_SPEED_NUM_100M;
+			speed_fec_capa[num].capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC);
+		}
+		num++;
+	}
+
+	if (pcaps->eee_cap & (ICE_AQC_PHY_EEE_EN_1000BASE_T |
+		ICE_AQC_PHY_EEE_EN_1000BASE_KX)) {
+		if (speed_fec_capa) {
+			speed_fec_capa[num].speed = RTE_ETH_SPEED_NUM_1G;
+			speed_fec_capa[num].capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC);
+		}
+		num++;
+	}
+
+	if (pcaps->eee_cap & (ICE_AQC_PHY_EEE_EN_10GBASE_T |
+		ICE_AQC_PHY_EEE_EN_10GBASE_KR)) {
+		if (speed_fec_capa) {
+			speed_fec_capa[num].speed = RTE_ETH_SPEED_NUM_10G;
+			speed_fec_capa[num].capa = auto_fec | link_nofec;
+
+			if (pcaps->link_fec_options & ICE_AQC_PHY_FEC_10G_KR_40G_KR4_EN)
+				speed_fec_capa[num].capa |= RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
+		}
+		num++;
+	}
+
+	if (pcaps->eee_cap & ICE_AQC_PHY_EEE_EN_25GBASE_KR) {
+		if (speed_fec_capa) {
+			speed_fec_capa[num].speed = RTE_ETH_SPEED_NUM_25G;
+			speed_fec_capa[num].capa = auto_fec | link_nofec;
+
+			if (pcaps->link_fec_options & ICE_AQC_PHY_FEC_25G_KR_CLAUSE74_EN)
+				speed_fec_capa[num].capa |= RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
+
+			if (pcaps->link_fec_options & ICE_AQC_PHY_FEC_25G_RS_CLAUSE91_EN)
+				speed_fec_capa[num].capa |= RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+		}
+		num++;
+	}
+
+	if (pcaps->eee_cap & ICE_AQC_PHY_EEE_EN_40GBASE_KR4) {
+		if (speed_fec_capa) {
+			speed_fec_capa[num].speed = RTE_ETH_SPEED_NUM_40G;
+			speed_fec_capa[num].capa = auto_fec | link_nofec;
+
+			if (pcaps->link_fec_options & ICE_AQC_PHY_FEC_10G_KR_40G_KR4_EN)
+				speed_fec_capa[num].capa |= RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
+		}
+		num++;
+	}
+
+	if (pcaps->eee_cap & (ICE_AQC_PHY_EEE_EN_50GBASE_KR2 |
+		ICE_AQC_PHY_EEE_EN_50GBASE_KR_PAM4)) {
+		if (speed_fec_capa) {
+			speed_fec_capa[num].speed = RTE_ETH_SPEED_NUM_50G;
+			speed_fec_capa[num].capa = auto_fec | link_nofec;
+
+			if (pcaps->link_fec_options & ICE_AQC_PHY_FEC_25G_KR_CLAUSE74_EN)
+				speed_fec_capa[num].capa |= RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
+
+			if (pcaps->link_fec_options & ICE_AQC_PHY_FEC_25G_RS_CLAUSE91_EN)
+				speed_fec_capa[num].capa |= RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+		}
+		num++;
+	}
+
+	if (pcaps->eee_cap & (ICE_AQC_PHY_EEE_EN_100GBASE_KR4 |
+		ICE_AQC_PHY_EEE_EN_100GBASE_KR2_PAM4)) {
+		if (speed_fec_capa) {
+			speed_fec_capa[num].speed = RTE_ETH_SPEED_NUM_100G;
+			speed_fec_capa[num].capa = auto_fec | link_nofec;
+
+			if (pcaps->link_fec_options & ICE_AQC_PHY_FEC_25G_KR_CLAUSE74_EN)
+				speed_fec_capa[num].capa |= RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
+
+			if (pcaps->link_fec_options & ICE_AQC_PHY_FEC_25G_RS_CLAUSE91_EN)
+				speed_fec_capa[num].capa |= RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+		}
+		num++;
+	}
+
+	return num;
+}
+
+static int
+ice_fec_get_capability(struct rte_eth_dev *dev, struct rte_eth_fec_capa *speed_fec_capa,
+			   unsigned int num)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ice_aqc_get_phy_caps_data pcaps = {0};
+	unsigned int capa_num;
+	int ret;
+
+	ret = ice_aq_get_phy_caps(hw->port_info, false, ICE_AQC_REPORT_TOPO_CAP_MEDIA,
+				  &pcaps, NULL);
+	if (ret != ICE_SUCCESS) {
+		PMD_DRV_LOG(ERR, "Failed to get capability information: %d\n",
+				ret);
+		return -ENOTSUP;
+	}
+
+	/* first time to get capa_num */
+	capa_num = ice_fec_get_capa_num(&pcaps, NULL);
+	if (!speed_fec_capa || num < capa_num)
+		return capa_num;
+
+	return ice_fec_get_capa_num(&pcaps, speed_fec_capa);
+}
+
+static int
+ice_fec_get(struct rte_eth_dev *dev, uint32_t *fec_capa)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	bool enable_lse = dev->data->dev_conf.intr_conf.lsc ? true : false;
+	bool link_up;
+	u32 temp_fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC);
+	struct ice_link_status link_status = {0};
+	struct ice_aqc_get_phy_caps_data pcaps = {0};
+	struct ice_port_info *pi = hw->port_info;
+	u8 fec_config;
+	int ret;
+
+	if (!pi)
+		return -ENOTSUP;
+
+	ret = ice_get_link_info_safe(pf, enable_lse, &link_status);
+	if (ret != ICE_SUCCESS) {
+		PMD_DRV_LOG(ERR, "Failed to get link information: %d\n",
+			ret);
+		return -ENOTSUP;
+	}
+
+	link_up = link_status.link_info & ICE_AQ_LINK_UP;
+
+	ret = ice_aq_get_phy_caps(pi, false, ICE_AQC_REPORT_TOPO_CAP_MEDIA,
+				  &pcaps, NULL);
+	if (ret != ICE_SUCCESS) {
+		PMD_DRV_LOG(ERR, "Failed to get capability information: %d\n",
+			ret);
+		return -ENOTSUP;
+	}
+
+	/* Get current FEC mode from port info */
+	if (link_up) {
+		switch (link_status.fec_info) {
+		case ICE_AQ_LINK_25G_KR_FEC_EN:
+			*fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
+			break;
+		case ICE_AQ_LINK_25G_RS_528_FEC_EN:
+			/* fall-through */
+		case ICE_AQ_LINK_25G_RS_544_FEC_EN:
+			*fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+			break;
+		default:
+			*fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC);
+			break;
+		}
+		return 0;
+	}
+
+	if (pcaps.caps & ICE_AQC_PHY_EN_AUTO_FEC) {
+		*fec_capa = RTE_ETH_FEC_MODE_CAPA_MASK(AUTO);
+		return 0;
+	}
+
+	fec_config = pcaps.link_fec_options & ICE_AQC_PHY_FEC_MASK;
+
+	if (fec_config & (ICE_AQC_PHY_FEC_10G_KR_40G_KR4_EN |
+				ICE_AQC_PHY_FEC_25G_KR_CLAUSE74_EN |
+				ICE_AQC_PHY_FEC_10G_KR_40G_KR4_REQ |
+				ICE_AQC_PHY_FEC_25G_KR_REQ))
+		temp_fec_capa |= RTE_ETH_FEC_MODE_CAPA_MASK(BASER);
+
+	if (fec_config & (ICE_AQC_PHY_FEC_25G_RS_CLAUSE91_EN |
+				ICE_AQC_PHY_FEC_25G_RS_528_REQ |
+				ICE_AQC_PHY_FEC_25G_RS_544_REQ))
+		temp_fec_capa |= RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+
+	*fec_capa = temp_fec_capa;
+	return 0;
+}
+
+static int
+ice_fec_set(struct rte_eth_dev *dev, uint32_t fec_capa)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ice_port_info *pi = hw->port_info;
+	struct ice_aqc_set_phy_cfg_data cfg = { 0 };
+	bool fec_auto = false, fec_kr = false, fec_rs = false;
+
+	if (!pi)
+		return -ENOTSUP;
+
+	if (fec_capa & ~(RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) |
+			RTE_ETH_FEC_MODE_CAPA_MASK(BASER) |
+			RTE_ETH_FEC_MODE_CAPA_MASK(RS)))
+		return -EINVAL;
+	/* Copy the current user PHY configuration. The current user PHY
+	 * configuration is initialized during probe from PHY capabilities
+	 * software mode, and updated on set PHY configuration.
+	 */
+	memcpy(&cfg, &pi->phy.curr_user_phy_cfg, sizeof(cfg));
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(AUTO))
+		fec_auto = true;
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(BASER))
+		fec_kr = true;
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(RS))
+		fec_rs = true;
+
+	if (fec_auto) {
+		if (fec_kr || fec_rs) {
+			if (fec_rs) {
+				cfg.link_fec_opt = ICE_AQC_PHY_FEC_25G_RS_CLAUSE91_EN |
+					ICE_AQC_PHY_FEC_25G_RS_528_REQ |
+					ICE_AQC_PHY_FEC_25G_RS_544_REQ;
+			}
+			if (fec_kr) {
+				cfg.link_fec_opt |= ICE_AQC_PHY_FEC_10G_KR_40G_KR4_EN |
+					ICE_AQC_PHY_FEC_25G_KR_CLAUSE74_EN |
+					ICE_AQC_PHY_FEC_10G_KR_40G_KR4_REQ |
+					ICE_AQC_PHY_FEC_25G_KR_REQ;
+			}
+		} else {
+			cfg.link_fec_opt = ICE_AQC_PHY_FEC_25G_RS_CLAUSE91_EN |
+				ICE_AQC_PHY_FEC_25G_RS_528_REQ |
+				ICE_AQC_PHY_FEC_25G_RS_544_REQ |
+				ICE_AQC_PHY_FEC_10G_KR_40G_KR4_EN |
+				ICE_AQC_PHY_FEC_25G_KR_CLAUSE74_EN |
+				ICE_AQC_PHY_FEC_10G_KR_40G_KR4_REQ |
+				ICE_AQC_PHY_FEC_25G_KR_REQ;
+		}
+	} else {
+		if (fec_kr ^ fec_rs) {
+			if (fec_rs) {
+				cfg.link_fec_opt = ICE_AQC_PHY_FEC_25G_RS_CLAUSE91_EN |
+					ICE_AQC_PHY_FEC_25G_RS_528_REQ |
+					ICE_AQC_PHY_FEC_25G_RS_544_REQ;
+			} else {
+				cfg.link_fec_opt = ICE_AQC_PHY_FEC_10G_KR_40G_KR4_EN |
+					ICE_AQC_PHY_FEC_25G_KR_CLAUSE74_EN |
+					ICE_AQC_PHY_FEC_10G_KR_40G_KR4_REQ |
+					ICE_AQC_PHY_FEC_25G_KR_REQ;
+			}
+		} else {
+			return -EINVAL;
+		}
+	}
+
+	/* Recovery of accidentally rewritten bit */
+	if (pi->phy.curr_user_phy_cfg.link_fec_opt &
+			ICE_AQC_PHY_FEC_DIS)
+		cfg.link_fec_opt |= ICE_AQC_PHY_FEC_DIS;
+
+	/* Proceed only if requesting different FEC mode */
+	if (pi->phy.curr_user_phy_cfg.link_fec_opt == cfg.link_fec_opt)
+		return 0;
+
+	cfg.caps |= ICE_AQ_PHY_ENA_AUTO_LINK_UPDT;
+
+	if (ice_aq_set_phy_cfg(pi->hw, pi, &cfg, NULL))
+		return -EAGAIN;
+
+	return 0;
 }
 
 static int

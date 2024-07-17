@@ -14,6 +14,7 @@
 
 #include "cpfl_ethdev.h"
 #include <ethdev_private.h>
+#include <sys/utsname.h>
 #include "cpfl_rxtx.h"
 #include "cpfl_flow.h"
 #include "cpfl_rules.h"
@@ -1579,7 +1580,7 @@ parse_repr(const char *key __rte_unused, const char *value, void *args)
 		RTE_DIM(eth_da->representor_ports));
 done:
 	if (str == NULL) {
-		RTE_LOG(ERR, EAL, "wrong representor format: %s\n", str);
+		PMD_DRV_LOG(ERR, "wrong representor format: %s", str);
 		return -1;
 	}
 
@@ -1907,7 +1908,8 @@ cpfl_stop_cfgqs(struct cpfl_adapter_ext *adapter)
 	int i, ret;
 
 	for (i = 0; i < CPFL_TX_CFGQ_NUM; i++) {
-		ret = idpf_vc_queue_switch(&adapter->ctrl_vport.base, i, false, false);
+		ret = idpf_vc_queue_switch(&adapter->ctrl_vport.base, i, false, false,
+								VIRTCHNL2_QUEUE_TYPE_CONFIG_TX);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Fail to disable Tx config queue.");
 			return ret;
@@ -1915,7 +1917,8 @@ cpfl_stop_cfgqs(struct cpfl_adapter_ext *adapter)
 	}
 
 	for (i = 0; i < CPFL_RX_CFGQ_NUM; i++) {
-		ret = idpf_vc_queue_switch(&adapter->ctrl_vport.base, i, true, false);
+		ret = idpf_vc_queue_switch(&adapter->ctrl_vport.base, i, true, false,
+								VIRTCHNL2_QUEUE_TYPE_CONFIG_RX);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Fail to disable Rx config queue.");
 			return ret;
@@ -1943,7 +1946,8 @@ cpfl_start_cfgqs(struct cpfl_adapter_ext *adapter)
 	}
 
 	for (i = 0; i < CPFL_TX_CFGQ_NUM; i++) {
-		ret = idpf_vc_queue_switch(&adapter->ctrl_vport.base, i, false, true);
+		ret = idpf_vc_queue_switch(&adapter->ctrl_vport.base, i, false, true,
+								VIRTCHNL2_QUEUE_TYPE_CONFIG_TX);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Fail to enable Tx config queue.");
 			return ret;
@@ -1951,7 +1955,8 @@ cpfl_start_cfgqs(struct cpfl_adapter_ext *adapter)
 	}
 
 	for (i = 0; i < CPFL_RX_CFGQ_NUM; i++) {
-		ret = idpf_vc_queue_switch(&adapter->ctrl_vport.base, i, true, true);
+		ret = idpf_vc_queue_switch(&adapter->ctrl_vport.base, i, true, true,
+								VIRTCHNL2_QUEUE_TYPE_CONFIG_RX);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Fail to enable Rx config queue.");
 			return ret;
@@ -2272,6 +2277,23 @@ cpfl_repr_allowlist_uninit(struct cpfl_adapter_ext *adapter)
 	rte_hash_free(adapter->repr_allowlist_hash);
 }
 
+static uint8_t
+get_running_host_id(void)
+{
+	struct utsname unamedata;
+	uint8_t host_id = CPFL_INVALID_HOST_ID;
+
+	if (uname(&unamedata) != 0)
+		PMD_INIT_LOG(ERR, "Cannot fetch node_name for host\n");
+	else if (strstr(unamedata.nodename, "ipu-imc"))
+		PMD_INIT_LOG(ERR, "CPFL PMD cannot be running on IMC.");
+	else if (strstr(unamedata.nodename, "ipu-acc"))
+		host_id = CPFL_HOST_ID_ACC;
+	else
+		host_id = CPFL_HOST_ID_HOST;
+
+	return host_id;
+}
 
 static int
 cpfl_adapter_ext_init(struct rte_pci_device *pci_dev, struct cpfl_adapter_ext *adapter,
@@ -2291,6 +2313,7 @@ cpfl_adapter_ext_init(struct rte_pci_device *pci_dev, struct cpfl_adapter_ext *a
 	hw->vendor_id = pci_dev->id.vendor_id;
 	hw->device_id = pci_dev->id.device_id;
 	hw->subsystem_vendor_id = pci_dev->id.subsystem_vendor_id;
+	adapter->host_id = get_running_host_id();
 
 	strncpy(adapter->name, pci_dev->device.name, PCI_PRI_STR_SIZE);
 
@@ -2393,18 +2416,18 @@ cpfl_p2p_q_grps_add(struct idpf_vport *vport,
 	int ret;
 
 	p2p_queue_grps_info->vport_id = vport->vport_id;
-	p2p_queue_grps_info->qg_info.num_queue_groups = CPFL_P2P_NB_QUEUE_GRPS;
-	p2p_queue_grps_info->qg_info.groups[0].num_rx_q = CPFL_MAX_P2P_NB_QUEUES;
-	p2p_queue_grps_info->qg_info.groups[0].num_rx_bufq = CPFL_P2P_NB_RX_BUFQ;
-	p2p_queue_grps_info->qg_info.groups[0].num_tx_q = CPFL_MAX_P2P_NB_QUEUES;
-	p2p_queue_grps_info->qg_info.groups[0].num_tx_complq = CPFL_P2P_NB_TX_COMPLQ;
-	p2p_queue_grps_info->qg_info.groups[0].qg_id.queue_group_id = CPFL_P2P_QUEUE_GRP_ID;
-	p2p_queue_grps_info->qg_info.groups[0].qg_id.queue_group_type = VIRTCHNL2_QUEUE_GROUP_P2P;
-	p2p_queue_grps_info->qg_info.groups[0].rx_q_grp_info.rss_lut_size = 0;
-	p2p_queue_grps_info->qg_info.groups[0].tx_q_grp_info.tx_tc = 0;
-	p2p_queue_grps_info->qg_info.groups[0].tx_q_grp_info.priority = 0;
-	p2p_queue_grps_info->qg_info.groups[0].tx_q_grp_info.is_sp = 0;
-	p2p_queue_grps_info->qg_info.groups[0].tx_q_grp_info.pir_weight = 0;
+	p2p_queue_grps_info->num_queue_groups = CPFL_P2P_NB_QUEUE_GRPS;
+	p2p_queue_grps_info->groups[0].num_rx_q = CPFL_MAX_P2P_NB_QUEUES;
+	p2p_queue_grps_info->groups[0].num_rx_bufq = CPFL_P2P_NB_RX_BUFQ;
+	p2p_queue_grps_info->groups[0].num_tx_q = CPFL_MAX_P2P_NB_QUEUES;
+	p2p_queue_grps_info->groups[0].num_tx_complq = CPFL_P2P_NB_TX_COMPLQ;
+	p2p_queue_grps_info->groups[0].qg_id.queue_group_id = CPFL_P2P_QUEUE_GRP_ID;
+	p2p_queue_grps_info->groups[0].qg_id.queue_group_type = VIRTCHNL2_QUEUE_GROUP_P2P;
+	p2p_queue_grps_info->groups[0].rx_q_grp_info.rss_lut_size = 0;
+	p2p_queue_grps_info->groups[0].tx_q_grp_info.tx_tc = 0;
+	p2p_queue_grps_info->groups[0].tx_q_grp_info.priority = 0;
+	p2p_queue_grps_info->groups[0].tx_q_grp_info.is_sp = 0;
+	p2p_queue_grps_info->groups[0].tx_q_grp_info.pir_weight = 0;
 
 	ret = idpf_vc_queue_grps_add(vport, p2p_queue_grps_info, p2p_q_vc_out_info);
 	if (ret != 0) {
@@ -2423,13 +2446,13 @@ cpfl_p2p_queue_info_init(struct cpfl_vport *cpfl_vport,
 	struct virtchnl2_queue_reg_chunks *vc_chunks_out;
 	int i, type;
 
-	if (p2p_q_vc_out_info->qg_info.groups[0].qg_id.queue_group_type !=
+	if (p2p_q_vc_out_info->groups[0].qg_id.queue_group_type !=
 	    VIRTCHNL2_QUEUE_GROUP_P2P) {
 		PMD_DRV_LOG(ERR, "Add queue group response mismatch.");
 		return -EINVAL;
 	}
 
-	vc_chunks_out = &p2p_q_vc_out_info->qg_info.groups[0].chunks;
+	vc_chunks_out = &p2p_q_vc_out_info->groups[0].chunks;
 
 	for (i = 0; i < vc_chunks_out->num_chunks; i++) {
 		type = vc_chunks_out->chunks[i].type;

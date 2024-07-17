@@ -2021,6 +2021,46 @@ mlx5_flow_validate_action_drop(struct rte_eth_dev *dev,
 }
 
 /*
+ * Check if a queue specified in the queue action is valid.
+ *
+ * @param[in] dev
+ *   Pointer to the Ethernet device structure.
+ * @param[in] action
+ *   Pointer to the queue action.
+ * @param[out] error
+ *   Pointer to error structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_flow_validate_target_queue(struct rte_eth_dev *dev,
+				const struct rte_flow_action *action,
+				struct rte_flow_error *error)
+{
+	const struct rte_flow_action_queue *queue = action->conf;
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	if (mlx5_is_external_rxq(dev, queue->index))
+		return 0;
+	if (!priv->rxqs_n)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+					  NULL, "No Rx queues configured");
+	if (queue->index >= priv->rxqs_n)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+					  &queue->index,
+					  "queue index out of range");
+	if (mlx5_rxq_get(dev, queue->index) == NULL)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+					  &queue->index,
+					  "queue is not configured");
+	return 0;
+}
+
+/*
  * Validate the queue action.
  *
  * @param[in] action
@@ -2044,7 +2084,6 @@ mlx5_flow_validate_action_queue(const struct rte_flow_action *action,
 				const struct rte_flow_attr *attr,
 				struct rte_flow_error *error)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
 	const struct rte_flow_action_queue *queue = action->conf;
 
 	if (!queue)
@@ -2060,23 +2099,7 @@ mlx5_flow_validate_action_queue(const struct rte_flow_action *action,
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_ATTR_EGRESS, NULL,
 					  "queue action not supported for egress.");
-	if (mlx5_is_external_rxq(dev, queue->index))
-		return 0;
-	if (!priv->rxqs_n)
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
-					  NULL, "No Rx queues configured");
-	if (queue->index >= priv->rxqs_n)
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
-					  &queue->index,
-					  "queue index out of range");
-	if (mlx5_rxq_get(dev, queue->index) == NULL)
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ACTION_CONF,
-					  &queue->index,
-					  "queue is not configured");
-	return 0;
+	return mlx5_flow_validate_target_queue(dev, action, error);
 }
 
 /**
@@ -3148,21 +3171,22 @@ mlx5_flow_validate_item_vxlan(struct rte_eth_dev *dev,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
 					  "multiple tunnel layers not"
 					  " supported");
+	/* HWS can match entire VXLAN, VXLAN-GBP and VXLAN-GPE headers */
+	if (mlx5_hws_active(dev))
+		return 0;
 	valid_mask = &rte_flow_item_vxlan_mask;
 	/*
 	 * Verify only UDPv4 is present as defined in
 	 * https://tools.ietf.org/html/rfc7348
 	 */
-	if (!mlx5_hws_active(dev)) {
-		if (!(item_flags & MLX5_FLOW_LAYER_OUTER_L4_UDP))
-			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ITEM,
-						  item, "no outer UDP layer found");
-		if (!(item_flags & MLX5_FLOW_LAYER_OUTER))
-			return rte_flow_error_set(error, ENOTSUP,
-						  RTE_FLOW_ERROR_TYPE_ITEM, item,
-						  "VXLAN tunnel must be fully defined");
-	}
+	if (!(item_flags & MLX5_FLOW_LAYER_OUTER_L4_UDP))
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ITEM,
+					  item, "no outer UDP layer found");
+	if (!(item_flags & MLX5_FLOW_LAYER_OUTER))
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ITEM, item,
+					  "VXLAN tunnel must be fully defined");
 	if (!mask)
 		mask = &rte_flow_item_vxlan_mask;
 
@@ -3388,7 +3412,7 @@ mlx5_flow_validate_item_gre_option(struct rte_eth_dev *dev,
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
 					  "GRE option following a wrong item");
-	if (!spec || !mask)
+	if ((!spec && !mlx5_hws_active(dev)) || !mask)
 		return rte_flow_error_set(error, EINVAL,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
 					  "At least one field gre_option(checksum/key/sequence) must be specified");
@@ -3414,18 +3438,21 @@ mlx5_flow_validate_item_gre_option(struct rte_eth_dev *dev,
 						  RTE_FLOW_ERROR_TYPE_ITEM,
 						  item,
 						  "Sequence bit must be on");
-	if (mask->checksum_rsvd.checksum || mask->sequence.sequence) {
-		if (priv->sh->steering_format_version ==
-		    MLX5_STEERING_LOGIC_FORMAT_CONNECTX_5 ||
-		    ((attr->group || (attr->transfer && priv->fdb_def_rule)) &&
-		     !priv->sh->misc5_cap) ||
-		    (!(priv->sh->tunnel_header_0_1 &&
-		       priv->sh->tunnel_header_2_3) &&
-		    !attr->group && (!attr->transfer || !priv->fdb_def_rule)))
-			return rte_flow_error_set(error, EINVAL,
-						  RTE_FLOW_ERROR_TYPE_ITEM,
-						  item,
-						  "Checksum/Sequence not supported");
+	if (!mlx5_hws_active(dev)) {
+		if (mask->checksum_rsvd.checksum || mask->sequence.sequence) {
+			if (priv->sh->steering_format_version ==
+			    MLX5_STEERING_LOGIC_FORMAT_CONNECTX_5 ||
+			    ((attr->group ||
+			      (attr->transfer && priv->fdb_def_rule)) &&
+			     !priv->sh->misc5_cap) ||
+			    (!(priv->sh->tunnel_header_0_1 &&
+			       priv->sh->tunnel_header_2_3) &&
+			     !attr->group &&
+			     (!attr->transfer || !priv->fdb_def_rule)))
+				return rte_flow_error_set
+					(error, EINVAL,	RTE_FLOW_ERROR_TYPE_ITEM,
+					 item, "Checksum/Sequence not supported");
+		}
 	}
 	ret = mlx5_flow_item_acceptable
 		(dev, item, (const uint8_t *)mask,
@@ -5178,8 +5205,8 @@ flow_mreg_add_copy_action(struct rte_eth_dev *dev, uint32_t mark_id,
 	};
 
 	/* Check if already registered. */
-	MLX5_ASSERT(priv->mreg_cp_tbl);
-	entry = mlx5_hlist_register(priv->mreg_cp_tbl, mark_id, &ctx);
+	MLX5_ASSERT(priv->sh->mreg_cp_tbl);
+	entry = mlx5_hlist_register(priv->sh->mreg_cp_tbl, mark_id, &ctx);
 	if (!entry)
 		return NULL;
 	return container_of(entry, struct mlx5_flow_mreg_copy_resource,
@@ -5218,10 +5245,10 @@ flow_mreg_del_copy_action(struct rte_eth_dev *dev,
 		return;
 	mcp_res = mlx5_ipool_get(priv->sh->ipool[MLX5_IPOOL_MCP],
 				 flow->rix_mreg_copy);
-	if (!mcp_res || !priv->mreg_cp_tbl)
+	if (!mcp_res || !priv->sh->mreg_cp_tbl)
 		return;
 	MLX5_ASSERT(mcp_res->rix_flow);
-	mlx5_hlist_unregister(priv->mreg_cp_tbl, &mcp_res->hlist_ent);
+	mlx5_hlist_unregister(priv->sh->mreg_cp_tbl, &mcp_res->hlist_ent);
 	flow->rix_mreg_copy = 0;
 }
 
@@ -5243,14 +5270,14 @@ flow_mreg_del_default_copy_action(struct rte_eth_dev *dev)
 	uint32_t mark_id;
 
 	/* Check if default flow is registered. */
-	if (!priv->mreg_cp_tbl)
+	if (!priv->sh->mreg_cp_tbl)
 		return;
 	mark_id = MLX5_DEFAULT_COPY_ID;
 	ctx.data = &mark_id;
-	entry = mlx5_hlist_lookup(priv->mreg_cp_tbl, mark_id, &ctx);
+	entry = mlx5_hlist_lookup(priv->sh->mreg_cp_tbl, mark_id, &ctx);
 	if (!entry)
 		return;
-	mlx5_hlist_unregister(priv->mreg_cp_tbl, entry);
+	mlx5_hlist_unregister(priv->sh->mreg_cp_tbl, entry);
 }
 
 /**
@@ -5288,7 +5315,7 @@ flow_mreg_add_default_copy_action(struct rte_eth_dev *dev,
 	 */
 	mark_id = MLX5_DEFAULT_COPY_ID;
 	ctx.data = &mark_id;
-	if (mlx5_hlist_lookup(priv->mreg_cp_tbl, mark_id, &ctx))
+	if (mlx5_hlist_lookup(priv->sh->mreg_cp_tbl, mark_id, &ctx))
 		return 0;
 	mcp_res = flow_mreg_add_copy_action(dev, mark_id, error);
 	if (!mcp_res)

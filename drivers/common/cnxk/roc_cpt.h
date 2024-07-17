@@ -30,22 +30,35 @@
 /* Vector of sizes in the burst of 16 CPT inst except first in 63:19 of
  * APT_LMT_ARG_S
  */
-#define ROC_CN10K_CPT_LMT_ARG                                                  \
-	(ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 0) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 1) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 2) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 3) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 4) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 5) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 6) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 7) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 8) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 9) |                            \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 10) |                           \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 11) |                           \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 12) |                           \
-	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 13) |                           \
+#define ROC_CN10K_CPT_LMT_ARG                                                                      \
+	(ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 0) | ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 1) |     \
+	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 2) | ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 3) |     \
+	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 4) | ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 5) |     \
+	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 6) | ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 7) |     \
+	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 8) | ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 9) |     \
+	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 10) | ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 11) |   \
+	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 12) | ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 13) |   \
 	 ROC_CN10K_CPT_INST_DW_M1 << (19 + 3 * 14))
+
+/* Vector of sizes in the burst of 2 * 16 CPT inst except first in 63:19 of
+ * APT_LMT_ARG_S
+ */
+#define ROC_CN10K_DUAL_CPT_LMT_ARG                                                                 \
+	(ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 0) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 1) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 2) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 3) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 4) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 5) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 6) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 7) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 8) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 9) |                                            \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 10) |                                           \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 11) |                                           \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 12) |                                           \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 13) |                                           \
+	 ROC_CN10K_TWO_CPT_INST_DW_M1 << (19 + 3 * 14))
 
 /* CPT helper macros */
 #define ROC_CPT_AH_HDR_LEN	12
@@ -187,12 +200,12 @@ int __roc_api roc_cpt_afs_print(struct roc_cpt *roc_cpt);
 int __roc_api roc_cpt_lfs_print(struct roc_cpt *roc_cpt);
 void __roc_api roc_cpt_iq_disable(struct roc_cpt_lf *lf);
 void __roc_api roc_cpt_iq_enable(struct roc_cpt_lf *lf);
-int __roc_api roc_cpt_lmtline_init(struct roc_cpt *roc_cpt,
-				   struct roc_cpt_lmtline *lmtline, int lf_id);
+int __roc_api roc_cpt_lmtline_init(struct roc_cpt *roc_cpt, struct roc_cpt_lmtline *lmtline,
+				   int lf_id, bool is_dual);
 
 void __roc_api roc_cpt_parse_hdr_dump(FILE *file, const struct cpt_parse_hdr_s *cpth);
-int __roc_api roc_cpt_ctx_write(struct roc_cpt_lf *lf, void *sa_dptr,
-				void *sa_cptr, uint16_t sa_len);
+int __roc_api roc_cpt_ctx_write(struct roc_cpt_lf *lf, void *sa_dptr, void *sa_cptr,
+				uint16_t sa_len);
 
 void __roc_api roc_cpt_int_misc_cb_register(roc_cpt_int_misc_cb_t cb, void *args);
 int __roc_api roc_cpt_int_misc_cb_unregister(roc_cpt_int_misc_cb_t cb, void *args);

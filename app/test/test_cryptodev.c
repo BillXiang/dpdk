@@ -11968,9 +11968,12 @@ test_tls_record_proto_process(const struct tls_record_test_data td[],
 		}
 	}
 
-	/* Create security session */
-	ut_params->sec_session = rte_security_session_create(ctx, &sess_conf,
-					ts_params->session_mpool);
+	if (ut_params->sec_session == NULL) {
+		/* Create security session */
+		ut_params->sec_session = rte_security_session_create(ctx, &sess_conf,
+				ts_params->session_mpool);
+	}
+
 	if (ut_params->sec_session == NULL)
 		return TEST_SKIPPED;
 
@@ -12075,9 +12078,10 @@ crypto_op_free:
 	rte_pktmbuf_free(ut_params->ibuf);
 	ut_params->ibuf = NULL;
 
-	if (ut_params->sec_session)
+	if (ut_params->sec_session != NULL && !flags->skip_sess_destroy) {
 		rte_security_session_destroy(ctx, ut_params->sec_session);
-	ut_params->sec_session = NULL;
+		ut_params->sec_session = NULL;
+	}
 
 	RTE_SET_USED(flags);
 
@@ -12121,8 +12125,11 @@ static int
 test_tls_record_proto_all(const struct tls_record_test_flags *flags)
 {
 	unsigned int i, nb_pkts = 1, pass_cnt = 0, payload_len, max_payload_len;
+	struct crypto_unittest_params *ut_params = &unittest_params;
 	struct tls_record_test_data td_outb[TEST_SEC_PKTS_MAX];
 	struct tls_record_test_data td_inb[TEST_SEC_PKTS_MAX];
+	void *sec_session_outb = NULL;
+	void *sec_session_inb = NULL;
 	int ret;
 
 	switch (flags->tls_version) {
@@ -12152,9 +12159,15 @@ again:
 		if (ret == TEST_SKIPPED)
 			continue;
 
+		if (flags->skip_sess_destroy)
+			ut_params->sec_session = sec_session_outb;
+
 		ret = test_tls_record_proto_process(td_outb, td_inb, nb_pkts, true, flags);
 		if (ret == TEST_SKIPPED)
 			continue;
+
+		if (flags->skip_sess_destroy && sec_session_outb == NULL)
+			sec_session_outb = ut_params->sec_session;
 
 		if (flags->zero_len &&
 		    ((flags->content_type == TLS_RECORD_TEST_CONTENT_TYPE_HANDSHAKE) ||
@@ -12169,11 +12182,17 @@ again:
 
 		test_tls_record_td_update(td_inb, td_outb, nb_pkts, flags);
 
+		if (flags->skip_sess_destroy)
+			ut_params->sec_session = sec_session_inb;
+
 		ret = test_tls_record_proto_process(td_inb, NULL, nb_pkts, true, flags);
 		if (ret == TEST_SKIPPED)
 			continue;
 
-		if (flags->pkt_corruption) {
+		if (flags->skip_sess_destroy && sec_session_inb == NULL)
+			sec_session_inb = ut_params->sec_session;
+
+		if (flags->pkt_corruption || flags->padding_corruption) {
 			if (ret == TEST_SUCCESS)
 				return TEST_FAILED;
 		} else {
@@ -12187,6 +12206,22 @@ skip_decrypt:
 
 		if (flags->display_alg)
 			test_sec_alg_display(sec_alg_list[i].param1, sec_alg_list[i].param2);
+
+		if (flags->skip_sess_destroy) {
+			uint8_t dev_id = testsuite_params.valid_devs[0];
+			struct rte_security_ctx *ctx;
+
+			ctx = rte_cryptodev_get_sec_ctx(dev_id);
+			if (sec_session_inb != NULL) {
+				rte_security_session_destroy(ctx, sec_session_inb);
+				sec_session_inb = NULL;
+			}
+			if (sec_session_outb != NULL) {
+				rte_security_session_destroy(ctx, sec_session_outb);
+				sec_session_outb = NULL;
+			}
+			ut_params->sec_session = NULL;
+		}
 
 		pass_cnt++;
 	}
@@ -12205,6 +12240,7 @@ test_tls_1_2_record_proto_data_walkthrough(void)
 	memset(&flags, 0, sizeof(flags));
 
 	flags.data_walkthrough = true;
+	flags.skip_sess_destroy = true;
 	flags.tls_version = RTE_SECURITY_VERSION_TLS_1_2;
 
 	return test_tls_record_proto_all(&flags);
@@ -12224,11 +12260,11 @@ test_tls_1_2_record_proto_display_list(void)
 }
 
 static int
-test_tls_1_2_record_proto_sgl(void)
+test_tls_record_proto_sgl(enum rte_security_tls_version tls_version)
 {
 	struct tls_record_test_flags flags = {
 		.nb_segs_in_mbuf = 5,
-		.tls_version = RTE_SECURITY_VERSION_TLS_1_2
+		.tls_version = tls_version
 	};
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct rte_cryptodev_info dev_info;
@@ -12243,11 +12279,18 @@ test_tls_1_2_record_proto_sgl(void)
 }
 
 static int
+test_tls_1_2_record_proto_sgl(void)
+{
+	return test_tls_record_proto_sgl(RTE_SECURITY_VERSION_TLS_1_2);
+}
+
+static int
 test_tls_record_proto_sgl_data_walkthrough(enum rte_security_tls_version tls_version)
 {
 	struct tls_record_test_flags flags = {
 		.nb_segs_in_mbuf = 5,
 		.tls_version = tls_version,
+		.skip_sess_destroy = true,
 		.data_walkthrough = true
 	};
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
@@ -12405,6 +12448,18 @@ test_tls_record_proto_sg_opt_padding_max(void)
 }
 
 static int
+test_tls_record_proto_sg_opt_padding_corrupt(void)
+{
+	struct tls_record_test_flags flags = {
+		.opt_padding = 8,
+		.padding_corruption = true,
+		.nb_segs_in_mbuf = 4,
+	};
+
+	return test_tls_record_proto_all(&flags);
+}
+
+static int
 test_dtls_1_2_record_proto_data_walkthrough(void)
 {
 	struct tls_record_test_flags flags;
@@ -12412,6 +12467,7 @@ test_dtls_1_2_record_proto_data_walkthrough(void)
 	memset(&flags, 0, sizeof(flags));
 
 	flags.data_walkthrough = true;
+	flags.skip_sess_destroy = true;
 	flags.tls_version = RTE_SECURITY_VERSION_DTLS_1_2;
 
 	return test_tls_record_proto_all(&flags);
@@ -12561,26 +12617,19 @@ test_dtls_1_2_record_proto_antireplay4096(void)
 static int
 test_dtls_1_2_record_proto_sgl(void)
 {
-	struct tls_record_test_flags flags = {
-		.nb_segs_in_mbuf = 5,
-		.tls_version = RTE_SECURITY_VERSION_DTLS_1_2
-	};
-	struct crypto_testsuite_params *ts_params = &testsuite_params;
-	struct rte_cryptodev_info dev_info;
-
-	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
-	if (!(dev_info.feature_flags & RTE_CRYPTODEV_FF_IN_PLACE_SGL)) {
-		printf("Device doesn't support in-place scatter-gather. Test Skipped.\n");
-		return TEST_SKIPPED;
-	}
-
-	return test_tls_record_proto_all(&flags);
+	return test_tls_record_proto_sgl(RTE_SECURITY_VERSION_DTLS_1_2);
 }
 
 static int
 test_dtls_1_2_record_proto_sgl_data_walkthrough(void)
 {
 	return test_tls_record_proto_sgl_data_walkthrough(RTE_SECURITY_VERSION_DTLS_1_2);
+}
+
+static int
+test_dtls_1_2_record_proto_sgl_oop(void)
+{
+	return test_tls_record_proto_sgl_oop(RTE_SECURITY_VERSION_DTLS_1_2);
 }
 
 static int
@@ -12681,6 +12730,32 @@ test_dtls_1_2_record_proto_sg_opt_padding_max(void)
 }
 
 static int
+test_tls_1_3_record_proto_display_list(void)
+{
+	struct tls_record_test_flags flags;
+
+	memset(&flags, 0, sizeof(flags));
+
+	flags.display_alg = true;
+	flags.tls_version = RTE_SECURITY_VERSION_TLS_1_3;
+
+	return test_tls_record_proto_all(&flags);
+}
+
+static int
+test_dtls_1_2_record_proto_sg_opt_padding_corrupt(void)
+{
+	struct tls_record_test_flags flags = {
+		.opt_padding = 8,
+		.padding_corruption = true,
+		.nb_segs_in_mbuf = 4,
+		.tls_version = RTE_SECURITY_VERSION_DTLS_1_2
+	};
+
+	return test_tls_record_proto_all(&flags);
+}
+
+static int
 test_tls_1_3_record_proto_corrupt_pkt(void)
 {
 	struct tls_record_test_flags flags = {
@@ -12740,6 +12815,57 @@ test_tls_1_3_record_proto_zero_len_non_app(void)
 
 	return test_tls_record_proto_all(&flags);
 }
+
+static int
+test_tls_1_3_record_proto_dm_opt_padding(void)
+{
+	return test_tls_record_proto_opt_padding(6, 0, RTE_SECURITY_VERSION_TLS_1_3);
+}
+
+static int
+test_tls_1_3_record_proto_sg_opt_padding(void)
+{
+	return test_tls_record_proto_opt_padding(25, 5, RTE_SECURITY_VERSION_TLS_1_3);
+}
+
+static int
+test_tls_1_3_record_proto_sg_opt_padding_1(void)
+{
+	return test_tls_record_proto_opt_padding(25, 4, RTE_SECURITY_VERSION_TLS_1_3);
+}
+
+static int
+test_tls_1_3_record_proto_data_walkthrough(void)
+{
+	struct tls_record_test_flags flags;
+
+	memset(&flags, 0, sizeof(flags));
+
+	flags.data_walkthrough = true;
+	flags.skip_sess_destroy = true;
+	flags.tls_version = RTE_SECURITY_VERSION_TLS_1_3;
+
+	return test_tls_record_proto_all(&flags);
+}
+
+static int
+test_tls_1_3_record_proto_sgl(void)
+{
+	return test_tls_record_proto_sgl(RTE_SECURITY_VERSION_TLS_1_3);
+}
+
+static int
+test_tls_1_3_record_proto_sgl_data_walkthrough(void)
+{
+	return test_tls_record_proto_sgl_data_walkthrough(RTE_SECURITY_VERSION_TLS_1_3);
+}
+
+static int
+test_tls_1_3_record_proto_sgl_oop(void)
+{
+	return test_tls_record_proto_sgl_oop(RTE_SECURITY_VERSION_TLS_1_3);
+}
+
 #endif
 
 static int
@@ -14794,6 +14920,12 @@ test_enq_callback_setup(void)
 	/* Test with invalid crypto device */
 	cb = rte_cryptodev_add_enq_callback(RTE_CRYPTO_MAX_DEVS,
 			qp_id, test_enq_callback, NULL);
+	if (rte_errno == ENOTSUP) {
+		RTE_LOG(ERR, USER1, "%s line %d: "
+			"rte_cryptodev_add_enq_callback() "
+			"Not supported, skipped\n", __func__, __LINE__);
+		return TEST_SKIPPED;
+	}
 	TEST_ASSERT_NULL(cb, "Add callback on qp %u on "
 			"cryptodev %u did not fail",
 			qp_id, RTE_CRYPTO_MAX_DEVS);
@@ -14909,6 +15041,12 @@ test_deq_callback_setup(void)
 	/* Test with invalid crypto device */
 	cb = rte_cryptodev_add_deq_callback(RTE_CRYPTO_MAX_DEVS,
 			qp_id, test_deq_callback, NULL);
+	if (rte_errno == ENOTSUP) {
+		RTE_LOG(ERR, USER1, "%s line %d: "
+			"rte_cryptodev_add_deq_callback() "
+			"Not supported, skipped\n", __func__, __LINE__);
+		return TEST_SKIPPED;
+	}
 	TEST_ASSERT_NULL(cb, "Add callback on qp %u on "
 			"cryptodev %u did not fail",
 			qp_id, RTE_CRYPTO_MAX_DEVS);
@@ -17932,6 +18070,10 @@ static struct unit_test_suite tls12_record_proto_testsuite  = {
 			"TLS record SG mode with optional padding > max range",
 			ut_setup_security, ut_teardown,
 			test_tls_record_proto_sg_opt_padding_max),
+		TEST_CASE_NAMED_ST(
+			"TLS record SG mode with padding corruption",
+			ut_setup_security, ut_teardown,
+			test_tls_record_proto_sg_opt_padding_corrupt),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };
@@ -18052,6 +18194,10 @@ static struct unit_test_suite dtls12_record_proto_testsuite  = {
 			ut_setup_security, ut_teardown,
 			test_dtls_1_2_record_proto_sgl_data_walkthrough),
 		TEST_CASE_NAMED_ST(
+			"Multi-segmented mode out of place",
+			ut_setup_security, ut_teardown,
+			test_dtls_1_2_record_proto_sgl_oop),
+		TEST_CASE_NAMED_ST(
 			"Packet corruption",
 			ut_setup_security, ut_teardown,
 			test_dtls_1_2_record_proto_corrupt_pkt),
@@ -18119,6 +18265,10 @@ static struct unit_test_suite dtls12_record_proto_testsuite  = {
 			"DTLS record SG mode with optional padding > max range",
 			ut_setup_security, ut_teardown,
 			test_dtls_1_2_record_proto_sg_opt_padding_max),
+		TEST_CASE_NAMED_ST(
+			"DTLS record SG mode with padding corruption",
+			ut_setup_security, ut_teardown,
+			test_dtls_1_2_record_proto_sg_opt_padding_corrupt),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };
@@ -18168,6 +18318,38 @@ static struct unit_test_suite tls13_record_proto_testsuite  = {
 			"TLS-1.3 record with zero len and content type as ctrl",
 			ut_setup_security, ut_teardown,
 			test_tls_1_3_record_proto_zero_len_non_app),
+		TEST_CASE_NAMED_ST(
+			"TLS-1.3 record DM mode with optional padding",
+			ut_setup_security, ut_teardown,
+			test_tls_1_3_record_proto_dm_opt_padding),
+		TEST_CASE_NAMED_ST(
+			"TLS-1.3 record SG mode with optional padding - 1",
+			ut_setup_security, ut_teardown,
+			test_tls_1_3_record_proto_sg_opt_padding),
+		TEST_CASE_NAMED_ST(
+			"TLS-1.3 record SG mode with optional padding",
+			ut_setup_security, ut_teardown,
+			test_tls_1_3_record_proto_sg_opt_padding_1),
+		TEST_CASE_NAMED_ST(
+			"Combined test alg list",
+			ut_setup_security, ut_teardown,
+			test_tls_1_3_record_proto_display_list),
+		TEST_CASE_NAMED_ST(
+			"Data walkthrough combined test alg list",
+			ut_setup_security, ut_teardown,
+			test_tls_1_3_record_proto_data_walkthrough),
+		TEST_CASE_NAMED_ST(
+			"Multi-segmented mode",
+			ut_setup_security, ut_teardown,
+			test_tls_1_3_record_proto_sgl),
+		TEST_CASE_NAMED_ST(
+			"Multi-segmented mode data walkthrough",
+			ut_setup_security, ut_teardown,
+			test_tls_1_3_record_proto_sgl_data_walkthrough),
+		TEST_CASE_NAMED_ST(
+			"Multi-segmented mode out of place",
+			ut_setup_security, ut_teardown,
+			test_tls_1_3_record_proto_sgl_oop),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };

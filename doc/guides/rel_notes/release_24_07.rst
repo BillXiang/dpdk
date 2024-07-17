@@ -83,6 +83,23 @@ New Features
     without having to do a full handshake over a Unix Domain Socket
     with the Device Plugin.
 
+* **Updated Amazon ena (Elastic Network Adapter) driver.**
+
+  * Reworked the driver logger usage in order to improve Tx performance.
+  * Reworked the device uninitialization flow to ensure complete resource cleanup
+    and lay the groundwork for hot-unplug support.
+
+* **Updated Intel ice driver.**
+
+  * Added support of E830 device family.
+  * Added support for configuring the Forward Error Correction (FEC) mode,
+    querying FEC capabilities and current FEC mode from a device.
+
+* **Updated Intel i40e driver.**
+
+  * Added support for configuring the Forward Error Correction (FEC) mode,
+    querying FEC capabilities and current FEC mode from a device.
+
 * **Updated Intel ixgbe driver.**
 
   * Updated base code with E610 device family support.
@@ -99,6 +116,9 @@ New Features
   * Added match with Tx queue.
   * Added match with external Tx queue.
   * Added match with E-Switch manager.
+  * Added async flow item and actions validation.
+  * Added global and per-port out of buffer counter for hairpin queues.
+  * Added hardware queue object context dump for Rx/Tx debugging.
 
 * **Updated TAP driver.**
 
@@ -119,6 +139,15 @@ New Features
 * **Added AMD Pensando ionic crypto driver.**
 
   Added a new crypto driver for AMD Pensando hardware accelerators.
+
+* **Updated NVIDIA mlx5 crypto driver.**
+
+  * Added AES-GCM IPsec operation optimization.
+
+* **Updated IPsec_MB crypto driver.**
+
+  * Made Kasumi and ChaCha-Poly PMDs to share the job code path
+    with AESNI_MB PMD.
 
 * **Added UADK compress driver.**
 
@@ -142,9 +171,10 @@ New Features
     (released) the previous event batch. This in turn facilities DSW
     use alongside high-latency look-aside hardware accelerators.
 
-* **Added defer queue reclamation in the hash library.**
+* **Updated the hash library.**
 
-  Added an API that allows the user to reclaim the defer queue with RCU.
+  * Added defer queue reclamation via RCU.
+  * Added SVE support for bulk lookup.
 
 
 Removed Items
@@ -182,6 +212,9 @@ API Changes
 
 * mbuf: ``RTE_MARKER`` fields ``cacheline0`` and ``cacheline1``
   have been removed from ``struct rte_mbuf``.
+
+* hash: The ``rte_hash_sig_compare_function`` internal enum is not exposed
+  in the public API anymore.
 
 
 ABI Changes

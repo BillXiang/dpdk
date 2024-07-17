@@ -188,6 +188,7 @@ dpaa_create_device_list(void)
 		if (dev->intr_handle == NULL) {
 			DPAA_BUS_LOG(ERR, "Failed to allocate intr handle");
 			ret = -ENOMEM;
+			free(dev);
 			goto cleanup;
 		}
 
@@ -221,7 +222,7 @@ dpaa_create_device_list(void)
 
 	if (dpaa_sec_available()) {
 		DPAA_BUS_LOG(INFO, "DPAA SEC devices are not available");
-		return 0;
+		goto qdma_dpaa;
 	}
 
 	/* Creating SEC Devices */
@@ -239,6 +240,7 @@ dpaa_create_device_list(void)
 		if (dev->intr_handle == NULL) {
 			DPAA_BUS_LOG(ERR, "Failed to allocate intr handle");
 			ret = -ENOMEM;
+			free(dev);
 			goto cleanup;
 		}
 
@@ -260,6 +262,7 @@ dpaa_create_device_list(void)
 
 	rte_dpaa_bus.device_count += i;
 
+qdma_dpaa:
 	/* Creating QDMA Device */
 	for (i = 0; i < RTE_DPAA_QDMA_DEVICES; i++) {
 		dev = calloc(1, sizeof(struct rte_dpaa_device));
@@ -326,7 +329,7 @@ int rte_dpaa_portal_init(void *arg)
 	dpaa_seqn_dynfield_offset =
 		rte_mbuf_dynfield_register(&dpaa_seqn_dynfield_desc);
 	if (dpaa_seqn_dynfield_offset < 0) {
-		DPAA_BUS_LOG(ERR, "Failed to register mbuf field for dpaa sequence number\n");
+		DPAA_BUS_LOG(ERR, "Failed to register mbuf field for dpaa sequence number");
 		return -rte_errno;
 	}
 
@@ -499,7 +502,7 @@ rte_dpaa_bus_scan(void)
 
 	if ((access(DPAA_DEV_PATH1, F_OK) != 0) &&
 	    (access(DPAA_DEV_PATH2, F_OK) != 0)) {
-		RTE_LOG(DEBUG, EAL, "DPAA Bus not present. Skipping.\n");
+		DPAA_BUS_LOG(DEBUG, "DPAA Bus not present. Skipping.");
 		return 0;
 	}
 
@@ -578,7 +581,7 @@ rte_dpaa_bus_dev_build(void)
 		return -EINVAL;
 	}
 
-	RTE_LOG(NOTICE, EAL, "DPAA Bus Detected\n");
+	DPAA_BUS_LOG(NOTICE, "DPAA Bus Detected");
 
 	if (!dpaa_netcfg->num_ethports) {
 		DPAA_BUS_LOG(INFO, "NO DPDK mapped net interfaces available");
@@ -586,7 +589,7 @@ rte_dpaa_bus_dev_build(void)
 	}
 
 #ifdef RTE_LIBRTE_DPAA_DEBUG_DRIVER
-	dump_netcfg(dpaa_netcfg);
+	dump_netcfg(dpaa_netcfg, stdout);
 #endif
 
 	DPAA_BUS_LOG(DEBUG, "Number of ethernet devices = %d",
@@ -673,7 +676,7 @@ rte_dpaa_bus_probe(void)
 		if (dev->device_type == FSL_DPAA_ETH) {
 			ret = rte_dpaa_setup_intr(dev->intr_handle);
 			if (ret)
-				DPAA_BUS_ERR("Error setting up interrupt.\n");
+				DPAA_BUS_ERR("Error setting up interrupt.");
 		}
 	}
 
@@ -734,13 +737,13 @@ rte_dpaa_find_device(const struct rte_device *start, rte_dev_cmp_t cmp,
 
 	while (dev != NULL) {
 		if (cmp(&dev->device, data) == 0) {
-			DPAA_BUS_DEBUG("Found dev=(%s)\n", dev->device.name);
+			DPAA_BUS_DEBUG("Found dev=(%s)", dev->device.name);
 			return &dev->device;
 		}
 		dev = TAILQ_NEXT(dev, next);
 	}
 
-	DPAA_BUS_DEBUG("Unable to find any device\n");
+	DPAA_BUS_DEBUG("Unable to find any device");
 	return NULL;
 }
 
@@ -786,14 +789,14 @@ dpaa_bus_dev_iterate(const void *start, const char *str,
 
 	/* Expectation is that device would be name=device_name */
 	if (strncmp(str, "name=", 5) != 0) {
-		DPAA_BUS_DEBUG("Invalid device string (%s)\n", str);
+		DPAA_BUS_DEBUG("Invalid device string (%s)", str);
 		return NULL;
 	}
 
 	/* Now that name=device_name format is available, split */
 	dup = strdup(str);
 	if (dup == NULL) {
-		DPAA_BUS_DEBUG("Dup string (%s) failed!\n", str);
+		DPAA_BUS_DEBUG("Dup string (%s) failed!", str);
 		return NULL;
 	}
 	dev_name = dup + strlen("name=");

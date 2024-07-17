@@ -2394,8 +2394,10 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		mlx5_devx_cmd_destroy(priv->q_counters);
 		priv->q_counters = NULL;
 	}
-	if (priv->mreg_cp_tbl)
-		mlx5_hlist_destroy(priv->mreg_cp_tbl);
+	if (priv->q_counters_hairpin) {
+		mlx5_devx_cmd_destroy(priv->q_counters_hairpin);
+		priv->q_counters_hairpin = NULL;
+	}
 	mlx5_mprq_free_mp(dev);
 	mlx5_os_free_shared_dr(priv);
 #ifdef HAVE_MLX5_HWS_SUPPORT

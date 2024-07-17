@@ -437,9 +437,10 @@ static int
 ice_dump_switch(struct rte_eth_dev *dev, uint8_t **buff2, uint32_t *size)
 {
 	struct ice_hw *hw;
+	struct ice_sq_cd *cd = NULL;
 	int i = 0;
 	uint16_t tbl_id = 0;
-	uint32_t tbl_idx = 0;
+	uint16_t tbl_idx = 0;
 	uint8_t *buffer = *buff2;
 
 	hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
@@ -466,10 +467,10 @@ ice_dump_switch(struct rte_eth_dev *dev, uint8_t **buff2, uint32_t *size)
 		}
 
 		res = ice_aq_get_internal_data(hw,
-			ICE_AQC_DBG_DUMP_CLUSTER_ID_SW,
+			ICE_AQC_DBG_DUMP_CLUSTER_ID_SW_E810,
 			tbl_id, tbl_idx, buff,
 			ICE_PKG_BUF_SIZE,
-			&buff_size, &tbl_id, &tbl_idx, NULL);
+			&buff_size, &tbl_id, &tbl_idx, NULL, cd);
 
 		if (res) {
 			free(buff);
@@ -481,7 +482,7 @@ ice_dump_switch(struct rte_eth_dev *dev, uint8_t **buff2, uint32_t *size)
 
 		free(buff);
 
-		if (tbl_idx == 0xffffffff) {
+		if (tbl_idx == 0xffff) {
 			tbl_idx = 0;
 			memset(buffer, '\n', sizeof(char));
 			buffer++;
@@ -713,7 +714,7 @@ int query_rl_profile(struct ice_hw *hw,
 		     uint8_t level, uint8_t flags, uint16_t profile_id,
 		     struct ice_aqc_rl_profile_elem *data)
 {
-	enum ice_status ice_status;
+	int ice_status;
 
 	data->level = level;
 	data->flags = flags;
@@ -735,14 +736,13 @@ int query_node(struct ice_hw *hw, uint32_t child, uint32_t *parent,
 	       uint8_t level, bool detail, FILE *stream)
 {
 	struct ice_aqc_txsched_elem_data data;
-	enum ice_status status;
 	struct ice_aqc_rl_profile_elem cir_prof;
 	struct ice_aqc_rl_profile_elem eir_prof;
 	struct ice_aqc_rl_profile_elem shared_prof;
 	struct ice_aqc_rl_profile_elem *cp = NULL;
 	struct ice_aqc_rl_profile_elem *ep = NULL;
 	struct ice_aqc_rl_profile_elem *sp = NULL;
-	int ret;
+	int status, ret;
 
 	status = ice_sched_query_elem(hw, child, &data);
 	if (status != ICE_SUCCESS) {

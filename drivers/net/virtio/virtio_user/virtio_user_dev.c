@@ -118,6 +118,7 @@ virtio_user_kick_queue(struct virtio_user_dev *dev, uint32_t queue_sel)
 	struct vhost_vring_state state;
 	struct vring *vring = &dev->vrings.split[queue_sel];
 	struct vring_packed *pq_vring = &dev->vrings.packed[queue_sel];
+	uint64_t desc_addr, avail_addr, used_addr;
 	struct vhost_vring_addr addr = {
 		.index = queue_sel,
 		.log_guest_addr = 0,
@@ -137,16 +138,23 @@ virtio_user_kick_queue(struct virtio_user_dev *dev, uint32_t queue_sel)
 	}
 
 	if (dev->features & (1ULL << VIRTIO_F_RING_PACKED)) {
-		addr.desc_user_addr =
-			(uint64_t)(uintptr_t)pq_vring->desc;
-		addr.avail_user_addr =
-			(uint64_t)(uintptr_t)pq_vring->driver;
-		addr.used_user_addr =
-			(uint64_t)(uintptr_t)pq_vring->device;
+		desc_addr = pq_vring->desc_iova;
+		avail_addr = desc_addr + pq_vring->num * sizeof(struct vring_packed_desc);
+		used_addr =  RTE_ALIGN_CEIL(avail_addr + sizeof(struct vring_packed_desc_event),
+					    VIRTIO_VRING_ALIGN);
+
+		addr.desc_user_addr = desc_addr;
+		addr.avail_user_addr = avail_addr;
+		addr.used_user_addr = used_addr;
 	} else {
-		addr.desc_user_addr = (uint64_t)(uintptr_t)vring->desc;
-		addr.avail_user_addr = (uint64_t)(uintptr_t)vring->avail;
-		addr.used_user_addr = (uint64_t)(uintptr_t)vring->used;
+		desc_addr = vring->desc_iova;
+		avail_addr = desc_addr + vring->num * sizeof(struct vring_desc);
+		used_addr = RTE_ALIGN_CEIL((uintptr_t)(&vring->avail->ring[vring->num]),
+					   VIRTIO_VRING_ALIGN);
+
+		addr.desc_user_addr = desc_addr;
+		addr.avail_user_addr = avail_addr;
+		addr.used_user_addr = used_addr;
 	}
 
 	state.index = queue_sel;
@@ -616,7 +624,7 @@ virtio_user_alloc_vrings(struct virtio_user_dev *dev)
 	bool packed_ring = !!(dev->device_features & (1ull << VIRTIO_F_RING_PACKED));
 
 	nr_vrings = dev->max_queue_pairs * 2;
-	if (dev->device_features & (1ull << VIRTIO_NET_F_CTRL_VQ))
+	if (dev->frontend_features & (1ull << VIRTIO_NET_F_CTRL_VQ))
 		nr_vrings++;
 
 	dev->callfds = rte_zmalloc("virtio_user_dev", nr_vrings * sizeof(*dev->callfds), 0);
@@ -896,6 +904,15 @@ virtio_user_handle_mq(struct virtio_user_dev *dev, uint16_t q_pairs)
 
 #define CVQ_MAX_DATA_DESCS 32
 
+static inline void *
+virtio_user_iova2virt(struct virtio_user_dev *dev, rte_iova_t iova)
+{
+	if (rte_eal_iova_mode() == RTE_IOVA_VA || dev->hw.use_va)
+		return (void *)(uintptr_t)iova;
+	else
+		return rte_mem_iova2virt(iova);
+}
+
 static uint32_t
 virtio_user_handle_ctrl_msg_split(struct virtio_user_dev *dev, struct vring *vring,
 			    uint16_t idx_hdr)
@@ -921,17 +938,18 @@ virtio_user_handle_ctrl_msg_split(struct virtio_user_dev *dev, struct vring *vri
 	idx_status = i;
 	n_descs++;
 
-	hdr = (void *)(uintptr_t)vring->desc[idx_hdr].addr;
+	hdr = virtio_user_iova2virt(dev, vring->desc[idx_hdr].addr);
 	if (hdr->class == VIRTIO_NET_CTRL_MQ &&
 	    hdr->cmd == VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET) {
-		uint16_t queues;
+		uint16_t queues, *addr;
 
-		queues = *(uint16_t *)(uintptr_t)vring->desc[idx_data].addr;
+		addr = virtio_user_iova2virt(dev, vring->desc[idx_data].addr);
+		queues = *addr;
 		status = virtio_user_handle_mq(dev, queues);
 	} else if (hdr->class == VIRTIO_NET_CTRL_MQ && hdr->cmd == VIRTIO_NET_CTRL_MQ_RSS_CONFIG) {
 		struct virtio_net_ctrl_rss *rss;
 
-		rss = (struct virtio_net_ctrl_rss *)(uintptr_t)vring->desc[idx_data].addr;
+		rss = virtio_user_iova2virt(dev, vring->desc[idx_data].addr);
 		status = virtio_user_handle_mq(dev, rss->max_tx_vq);
 	} else if (hdr->class == VIRTIO_NET_CTRL_RX  ||
 		   hdr->class == VIRTIO_NET_CTRL_MAC ||
@@ -944,7 +962,7 @@ virtio_user_handle_ctrl_msg_split(struct virtio_user_dev *dev, struct vring *vri
 				(struct virtio_pmd_ctrl *)hdr, dlen, nb_dlen);
 
 	/* Update status */
-	*(virtio_net_ctrl_ack *)(uintptr_t)vring->desc[idx_status].addr = status;
+	*(virtio_net_ctrl_ack *)virtio_user_iova2virt(dev, vring->desc[idx_status].addr) = status;
 
 	return n_descs;
 }
@@ -986,18 +1004,18 @@ virtio_user_handle_ctrl_msg_packed(struct virtio_user_dev *dev,
 		n_descs++;
 	}
 
-	hdr = (void *)(uintptr_t)vring->desc[idx_hdr].addr;
+	hdr = virtio_user_iova2virt(dev, vring->desc[idx_hdr].addr);
 	if (hdr->class == VIRTIO_NET_CTRL_MQ &&
 	    hdr->cmd == VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET) {
-		uint16_t queues;
+		uint16_t queues, *addr;
 
-		queues = *(uint16_t *)(uintptr_t)
-				vring->desc[idx_data].addr;
+		addr = virtio_user_iova2virt(dev, vring->desc[idx_data].addr);
+		queues = *addr;
 		status = virtio_user_handle_mq(dev, queues);
 	} else if (hdr->class == VIRTIO_NET_CTRL_MQ && hdr->cmd == VIRTIO_NET_CTRL_MQ_RSS_CONFIG) {
 		struct virtio_net_ctrl_rss *rss;
 
-		rss = (struct virtio_net_ctrl_rss *)(uintptr_t)vring->desc[idx_data].addr;
+		rss = virtio_user_iova2virt(dev, vring->desc[idx_data].addr);
 		status = virtio_user_handle_mq(dev, rss->max_tx_vq);
 	} else if (hdr->class == VIRTIO_NET_CTRL_RX  ||
 		   hdr->class == VIRTIO_NET_CTRL_MAC ||
@@ -1010,8 +1028,7 @@ virtio_user_handle_ctrl_msg_packed(struct virtio_user_dev *dev,
 				(struct virtio_pmd_ctrl *)hdr, dlen, nb_dlen);
 
 	/* Update status */
-	*(virtio_net_ctrl_ack *)(uintptr_t)
-		vring->desc[idx_status].addr = status;
+	*(virtio_net_ctrl_ack *)virtio_user_iova2virt(dev, vring->desc[idx_status].addr) = status;
 
 	/* Update used descriptor */
 	vring->desc[idx_hdr].id = vring->desc[idx_status].id;

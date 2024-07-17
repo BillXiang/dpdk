@@ -1023,6 +1023,11 @@ pdcp_insert_uplane_aes_aes_op(struct program *p,
 		SEQFIFOLOAD(p, MSG1, 0, VLF | LAST1 | FLUSH1);
 		MOVEB(p, CONTEXT1, 0, MATH3, 0, 4, WAITCOMP | IMMED);
 
+		/* conditional jump with calm added to ensure that the
+		 * previous processing has been completed
+		 */
+		JUMP(p, 1, LOCAL_JUMP, ALL_TRUE, CALM);
+
 		LOAD(p, CLRW_RESET_CLS1_CHA |
 		     CLRW_CLR_C1KEY |
 		     CLRW_CLR_C1CTX |
@@ -1069,6 +1074,11 @@ pdcp_insert_uplane_aes_aes_op(struct program *p,
 		SEQFIFOLOAD(p, MSG1, 0, VLF | LAST1 | FLUSH1);
 
 		MOVEB(p, OFIFO, 0, MATH3, 0, 4, IMMED);
+
+		/* conditional jump with calm added to ensure that the
+		 * previous processing has been completed
+		 */
+		JUMP(p, 1, LOCAL_JUMP, ALL_TRUE, CALM);
 
 		LOAD(p, CLRW_RESET_CLS1_CHA |
 		     CLRW_CLR_C1KEY |
@@ -2339,7 +2349,7 @@ cnstr_shdsc_pdcp_c_plane_encap(uint32_t *descbuf,
 		{	/* NULL */
 			SHR_WAIT,	/* NULL */
 			SHR_WAIT,	/* SNOW f9 */
-			SHR_WAIT,	/* AES CMAC */
+			SHR_ALWAYS,	/* AES CMAC */
 			SHR_WAIT	/* ZUC-I */
 		},
 		{	/* SNOW f8 */
@@ -2351,7 +2361,7 @@ cnstr_shdsc_pdcp_c_plane_encap(uint32_t *descbuf,
 		{	/* AES CTR */
 			SHR_WAIT,	/* NULL */
 			SHR_WAIT,	/* SNOW f9 */
-			SHR_WAIT,	/* AES CMAC */
+			SHR_ALWAYS,	/* AES CMAC */
 			SHR_WAIT	/* ZUC-I */
 		},
 		{	/* ZUC-E */
@@ -2479,7 +2489,7 @@ cnstr_shdsc_pdcp_c_plane_decap(uint32_t *descbuf,
 		{	/* NULL */
 			SHR_WAIT,	/* NULL */
 			SHR_WAIT,	/* SNOW f9 */
-			SHR_WAIT,	/* AES CMAC */
+			SHR_ALWAYS,	/* AES CMAC */
 			SHR_WAIT	/* ZUC-I */
 		},
 		{	/* SNOW f8 */
@@ -2491,7 +2501,7 @@ cnstr_shdsc_pdcp_c_plane_decap(uint32_t *descbuf,
 		{	/* AES CTR */
 			SHR_WAIT,	/* NULL */
 			SHR_WAIT,	/* SNOW f9 */
-			SHR_WAIT,	/* AES CMAC */
+			SHR_ALWAYS,	/* AES CMAC */
 			SHR_WAIT	/* ZUC-I */
 		},
 		{	/* ZUC-E */
@@ -2644,7 +2654,7 @@ cnstr_shdsc_pdcp_u_plane_encap(uint32_t *descbuf,
 		{	/* NULL */
 			SHR_WAIT,	/* NULL */
 			SHR_WAIT,	/* SNOW f9 */
-			SHR_WAIT,	/* AES CMAC */
+			SHR_ALWAYS,	/* AES CMAC */
 			SHR_WAIT	/* ZUC-I */
 		},
 		{	/* SNOW f8 */
@@ -2656,7 +2666,7 @@ cnstr_shdsc_pdcp_u_plane_encap(uint32_t *descbuf,
 		{	/* AES CTR */
 			SHR_WAIT,	/* NULL */
 			SHR_WAIT,	/* SNOW f9 */
-			SHR_WAIT,	/* AES CMAC */
+			SHR_ALWAYS,	/* AES CMAC */
 			SHR_WAIT	/* ZUC-I */
 		},
 		{	/* ZUC-E */
@@ -2829,7 +2839,7 @@ cnstr_shdsc_pdcp_u_plane_decap(uint32_t *descbuf,
 		{	/* NULL */
 			SHR_WAIT,	/* NULL */
 			SHR_WAIT,	/* SNOW f9 */
-			SHR_WAIT,	/* AES CMAC */
+			SHR_ALWAYS,	/* AES CMAC */
 			SHR_WAIT	/* ZUC-I */
 		},
 		{	/* SNOW f8 */
@@ -2841,7 +2851,7 @@ cnstr_shdsc_pdcp_u_plane_decap(uint32_t *descbuf,
 		{	/* AES CTR */
 			SHR_WAIT,	/* NULL */
 			SHR_WAIT,	/* SNOW f9 */
-			SHR_WAIT,	/* AES CMAC */
+			SHR_ALWAYS,	/* AES CMAC */
 			SHR_WAIT	/* ZUC-I */
 		},
 		{	/* ZUC-E */
